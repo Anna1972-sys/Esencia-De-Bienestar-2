@@ -1,4 +1,5 @@
-import { createContext, useContext, useEffect, useRef, useState, ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import type { Session, User } from "@supabase/supabase-js";
 
@@ -10,7 +11,13 @@ interface AuthCtx {
   signOut: () => Promise<void>;
 }
 
-const Ctx = createContext<AuthCtx>({ user: null, session: null, loading: true, isAdmin: false, signOut: async () => {} });
+const Ctx = createContext<AuthCtx>({
+  user: null,
+  session: null,
+  loading: true,
+  isAdmin: false,
+  signOut: async () => {},
+});
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
@@ -21,55 +28,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false;
 
-    const loadRole = (userId: string) => {
-      supabase
+    const loadRole = async (userId: string) => {
+      const { data } = await supabase
         .from("user_roles")
         .select("role")
-        .eq("user_id", userId)
-        .then(({ data, error }) => {
-          if (cancelled) return;
-          // eslint-disable-next-line no-console
-          console.log("[Auth] loadRole result", { userId, data, error });
-          setIsAdmin(!!data?.some((r: any) => r.role === "admin"));
-        });
+        .eq("user_id", userId);
+
+      if (!cancelled) {
+        setIsAdmin(!!data?.some((r: any) => r.role === "admin"));
+      }
     };
 
-    // 1) Register listener FIRST (synchronous callback, no awaits inside)
-    const { data: sub } = supabase.auth.onAuthStateChange((event, sess) => {
-      // eslint-disable-next-line no-console
-      console.log("[Auth] onAuthStateChange", { event, hasSession: !!sess, userId: sess?.user?.id, hydrated: hydratedRef.current });
-
-      // Ignore the very first INITIAL_SESSION fire — getSession() below is authoritative
-      if (event === "INITIAL_SESSION" && !hydratedRef.current) {
-        // eslint-disable-next-line no-console
-        console.log("[Auth] ignored INITIAL_SESSION pre-hydration");
-        return;
-      }
-
-      // Only treat null sessions as logout on explicit SIGNED_OUT to avoid transient
-      // nulls during token refresh from kicking the user back to /login.
-      if (!sess && event !== "SIGNED_OUT") {
-        // eslint-disable-next-line no-console
-        console.warn("[Auth] ignored null session for event", event);
-        return;
-      }
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => {
+      if (!sess && !hydratedRef.current) return;
 
       setSession(sess);
+
       if (sess?.user) {
         setTimeout(() => loadRole(sess.user.id), 0);
       } else {
         setIsAdmin(false);
       }
+
+      setLoading(false);
     });
 
-    // 2) Then hydrate from storage
-    supabase.auth.getSession().then(({ data, error }) => {
+    supabase.auth.getSession().then(({ data }) => {
       if (cancelled) return;
-      // eslint-disable-next-line no-console
-      console.log("[Auth] getSession resolved", { hasSession: !!data.session, userId: data.session?.user?.id, error });
+
       hydratedRef.current = true;
       setSession(data.session);
-      if (data.session?.user) loadRole(data.session.user.id);
+
+      if (data.session?.user) {
+        loadRole(data.session.user.id);
+      }
+
       setLoading(false);
     });
 
@@ -80,13 +73,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <Ctx.Provider value={{
-      user: session?.user ?? null,
-      session,
-      loading,
-      isAdmin,
-      signOut: async () => { await supabase.auth.signOut(); },
-    }}>{children}</Ctx.Provider>
+    <Ctx.Provider
+      value={{
+        user: session?.user ?? null,
+        session,
+        loading,
+        isAdmin,
+        signOut: async () => {
+          await supabase.auth.signOut();
+        },
+      }}
+    >
+      {children}
+    </Ctx.Provider>
   );
 }
 
